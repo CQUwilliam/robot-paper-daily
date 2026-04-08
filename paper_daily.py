@@ -51,6 +51,26 @@ ARXIV_HEADERS = {
 # LLM配置
 # 新代码（从环境变量获取）
 import os
+
+
+def load_local_env(filename: str = ".env.local") -> None:
+    """加载本地环境变量文件，避免把密钥写进代码。"""
+    if not os.path.exists(filename):
+        return
+    with open(filename, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_local_env()
+
 LLM_API_KEY = os.getenv("LLM_API_KEY")  # 从环境变量读取密钥
 LLM_API_HOST = "api.chatanywhere.org" # https://github.com/chatanywhere/GPT_API_free
 LLM_API_ENDPOINT = "/v1/chat/completions"
@@ -77,6 +97,10 @@ PAGE_FIGURE_FRAGMENT_PATTERN = re.compile(
     r'\d+\s+(pages?|page)\s*,?\s*\d*\s*(figures?|figure)?\s*,?\s*\d*\s*(tables?|table)?',
     re.IGNORECASE  # 不区分大小写
 )
+MAX_TITLE_CHARS = 300
+MAX_ABSTRACT_CHARS = 1800
+MAX_INTRO_CHARS = 2600
+MAX_RELATED_CHARS = 1800
 
 
 # -------------------------- 工具函数 --------------------------
@@ -95,6 +119,16 @@ def get_arxiv_soup(url: str) -> Optional[BeautifulSoup]:
     except Exception as e:
         logging.error(f"arXiv 页面请求失败（{url}）：{str(e)}")
         return None
+
+
+def truncate_text(text: str, max_chars: int) -> str:
+    """裁剪文本，避免超过免费 API 的输入长度限制。"""
+    if not text:
+        return ""
+    compact = re.sub(r"\s+", " ", str(text)).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[:max_chars].rstrip() + "...[TRUNCATED]"
 
 
 def extract_abstract(soup: BeautifulSoup) -> str:
@@ -237,7 +271,16 @@ def extract_related_work(soup: BeautifulSoup) -> str:
 def call_llm_for_summary(title: str, abstract: str, introduction: str,relate_work: str) -> Dict:
     """调用LLM生成总结，并提取1-5分相关性评分"""
     system_prompt = LLM_PROMPT
-    user_prompt = f"标题：{title}\n摘要：{abstract}\n引言：{introduction}\n相关工作:{relate_work}"
+    safe_title = truncate_text(title, MAX_TITLE_CHARS)
+    safe_abstract = truncate_text(abstract, MAX_ABSTRACT_CHARS)
+    safe_introduction = truncate_text(introduction, MAX_INTRO_CHARS)
+    safe_related_work = truncate_text(relate_work, MAX_RELATED_CHARS)
+    user_prompt = (
+        f"标题：{safe_title}\n"
+        f"摘要：{safe_abstract}\n"
+        f"引言：{safe_introduction}\n"
+        f"相关工作:{safe_related_work}"
+    )
     payload = json.dumps({
         "model": LLM_MODEL,
         "messages": [
