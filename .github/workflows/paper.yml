@@ -2,6 +2,9 @@
 
 name: Run Arxiv Papers Daily
 
+permissions:
+  contents: write
+
 # Controls when the workflow will run
 on:
   # Allows you to run this workflow manually from the Actions tab
@@ -14,8 +17,8 @@ on:
 #     - main
 
 env:
-  GITHUB_USER_NAME: RainbowNebula
-  GITHUB_USER_EMAIL: RainbowNebula@163.com
+  GITHUB_USER_NAME: github-actions[bot]
+  GITHUB_USER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
   
   
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
@@ -29,10 +32,10 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Set up Python Env
-        uses: actions/setup-python@v1
+        uses: actions/setup-python@v5
         with:
           python-version: 3.11     
 
@@ -55,7 +58,7 @@ jobs:
       - name: Push new robot-arxiv-daily.md
         uses: github-actions-x/commit@v2.9
         with:
-          github-token: ${{ secrets.GIT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "Github Action Automatic Update CV Papers"
           files: README.md arxiv_cs_ro_papers_final.json index.html
           rebase: 'true'
