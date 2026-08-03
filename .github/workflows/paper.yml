@@ -17,6 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  TZ: Asia/Shanghai
   GITHUB_USER_NAME: github-actions[bot]
   GITHUB_USER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
   
@@ -31,10 +32,10 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         
       - name: Set up Python Env
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: 3.11     
 

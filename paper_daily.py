@@ -76,6 +76,7 @@ LLM_API_HOST = "api.chatanywhere.org" # https://github.com/chatanywhere/GPT_API_
 LLM_API_ENDPOINT = "/v1/chat/completions"
 LLM_MODEL = "gpt-4o-mini"
 LLM_PROMPT = os.getenv("LLM_PROMPT")
+llm_disabled_reason: Optional[str] = None
 
 # 爬取配置
 REQUEST_INTERVAL = 1.2
@@ -268,9 +269,28 @@ def extract_related_work(soup: BeautifulSoup) -> str:
     return "\n\n".join(contents) if contents else "未获取到相关工作"
 
 
+def build_llm_fallback(abstract: str, error_msg: str) -> Dict:
+    """LLM 不可用时保留论文摘要，保证每日元数据更新不被阻断。"""
+    safe_abstract = truncate_text(abstract, MAX_ABSTRACT_CHARS)
+    return {
+        "summary": f"自动总结暂不可用，以下为论文摘要：\n{safe_abstract}",
+        "score": 0,
+        "error": error_msg,
+    }
+
+
 def call_llm_for_summary(title: str, abstract: str, introduction: str,relate_work: str) -> Dict:
     """调用LLM生成总结，并提取1-5分相关性评分"""
-    system_prompt = LLM_PROMPT
+    global llm_disabled_reason
+
+    if llm_disabled_reason:
+        return build_llm_fallback(abstract, llm_disabled_reason)
+    if not LLM_API_KEY or LLM_API_KEY.startswith("sk-xxxx"):
+        llm_disabled_reason = "LLM_API_KEY 未配置"
+        logging.warning(f"{llm_disabled_reason}，本次运行将使用论文摘要作为降级内容")
+        return build_llm_fallback(abstract, llm_disabled_reason)
+
+    system_prompt = LLM_PROMPT or "请用中文总结机器人论文，并给出1到5分的相关性评分。"
     safe_title = truncate_text(title, MAX_TITLE_CHARS)
     safe_abstract = truncate_text(abstract, MAX_ABSTRACT_CHARS)
     safe_introduction = truncate_text(introduction, MAX_INTRO_CHARS)
@@ -301,7 +321,8 @@ def call_llm_for_summary(title: str, abstract: str, introduction: str,relate_wor
         res = conn.getresponse()
         
         if res.status != 200:
-            raise Exception(f"API 状态码异常：{res.status}，响应：{res.read().decode('utf-8')}")
+            res.read()
+            raise RuntimeError(f"LLM API 返回 HTTP {res.status}")
         
         data = json.loads(res.read().decode("utf-8"))
         conn.close()
@@ -319,12 +340,9 @@ def call_llm_for_summary(title: str, abstract: str, introduction: str,relate_wor
         }
     except Exception as e:
         error_msg = str(e)
-        logging.error(f"大模型调用失败：{error_msg}")
-        return {
-            "summary": "大模型总结失败",
-            "score": 0,  # 调用失败默认0分
-            "error": error_msg
-        }
+        llm_disabled_reason = error_msg
+        logging.error(f"大模型调用失败：{error_msg}；本次运行的其余论文将使用摘要作为降级内容")
+        return build_llm_fallback(abstract, error_msg)
     
 
 def get_recent_dates(limit: int = 3) -> List[str]:
@@ -561,13 +579,16 @@ def crawl_and_process_papers(initial_url: str, max_pages: Optional[int] = None) 
             html_link = html_link_tag["href"].strip()
             html_link = f"https://arxiv.org{html_link}" if html_link.startswith("/") else html_link
             
-            # 检查是否已爬取（避免重复）
+            # 已成功总结的论文直接跳过；失败项原位重试，避免重复追加。
             is_duplicate = False
+            existing_papers = []
             for papers in all_papers_global.values():
                 for paper in papers:
-                    if paper.get("arxiv_html_link") == html_link and paper.get("llm_summary") != "大模型总结失败":
-                        is_duplicate = True
-                        break
+                    if paper.get("arxiv_html_link") == html_link:
+                        if not paper.get("llm_error") and paper.get("llm_summary") != "大模型总结失败":
+                            is_duplicate = True
+                        else:
+                            existing_papers.append(paper)
                 if is_duplicate:
                     break
             if is_duplicate:
@@ -633,12 +654,19 @@ def crawl_and_process_papers(initial_url: str, max_pages: Optional[int] = None) 
                 "llm_score": llm_result["score"],
                 "llm_error": llm_result["error"]
             }
-            # 添加到当前日期的列表中
-            all_papers_global[current_date].append(paper_data)
+            if existing_papers:
+                paper_data["crawl_datetime"] = existing_papers[0].get("crawl_datetime", crawl_datetime)
+                for existing_paper in existing_papers:
+                    existing_paper.update(paper_data)
+                logging.info(f"已原位更新 {len(existing_papers)} 条失败记录：{html_link}")
+            else:
+                all_papers_global[current_date].append(paper_data)
             logging.info(f"第 {current_page} 页 - 完成第 {idx} 篇论文：{title[:30]}...")
         
         # 4. 保存当前页数据到JSON
         try:
+            if not all_papers_global.get(current_date):
+                all_papers_global.pop(current_date, None)
             with open(JSON_SAVE_PATH, "w", encoding="utf-8") as f:
                 json.dump(all_papers_global, f, ensure_ascii=False, indent=4)
             logging.info(f"第 {current_page} 页数据已保存至 JSON：{JSON_SAVE_PATH}")
@@ -660,12 +688,7 @@ def crawl_and_process_papers(initial_url: str, max_pages: Optional[int] = None) 
 
 # -------------------------- 程序入口 --------------------------
 if __name__ == "__main__":
-    # 1. 前置检查：LLM API Key是否配置
-    if not LLM_API_KEY or LLM_API_KEY.startswith("sk-xxxx"):
-        logging.error("请先替换 LLM_API_KEY 为真实有效的 API Key！")
-        sys.exit(1)
-    
-    # 2. 初始化日志
+    # 1. 初始化日志
     logging.info("="*60)
     logging.info("          arXiv cs.RO 领域论文爬取与LLM总结程序          ")
     logging.info("="*60)
